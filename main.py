@@ -1,11 +1,13 @@
 from mem0 import Memory
 from ollama import Client
+import json
+
 
 # -----------------------------
 # Mem0 configuration
 # -----------------------------
-USER_ID = "atharva"
 
+USER_ID = "atharva"
 
 config = {
     "vector_store": {
@@ -36,13 +38,122 @@ config = {
     },
 }
 
+
+# -----------------------------
+# Memory categories
+# -----------------------------
+
+VALID_CATEGORIES = {
+    "fact",
+    "preference",
+    "goal",
+    "project",
+    "skill",
+    "temporary",
+}
+
+
+# -----------------------------
+# Classify a memory
+# -----------------------------
+
+def classify_memory(memory_text):
+
+    prompt = f"""
+Classify the following user memory into exactly one category.
+
+Categories:
+- fact: stable information about the user
+- preference: likes, dislikes, or preferences
+- goal: something the user wants to achieve
+- project: something the user is currently building or working on
+- skill: something the user is learning or knows
+- temporary: short-lived information that may soon become irrelevant
+
+Return ONLY valid JSON in this format:
+{{"category": "skill"}}
+
+Memory:
+{memory_text}
+"""
+
+    response = ollama.chat(
+        model="llama3.1:latest",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+    )
+
+    result = json.loads(response.message.content)
+
+    category = result["category"]
+
+    if category not in VALID_CATEGORIES:
+        raise ValueError(
+            f"Invalid category returned: {category}"
+        )
+
+    return category
+
+
+
+def classify_query(query):
+
+    prompt = f"""
+Classify the following user query into exactly one category if possible.
+
+Categories:
+- fact: asks about stable information about the user
+- preference: asks about likes, dislikes, or preferences
+- goal: asks about something the user wants to achieve
+- project: asks about something the user is building or working on
+- skill: asks about something the user is learning or knows
+- temporary: asks about short-lived information
+- all: use this when the query does not clearly belong to one category
+
+Return ONLY valid JSON in this format:
+{{"category": "skill"}}
+
+Query:
+{query}
+"""
+
+    response = ollama.chat(
+        model="llama3.1:latest",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+    )
+
+    result = json.loads(response.message.content)
+
+    category = result["category"]
+
+    valid_query_categories = VALID_CATEGORIES | {"all"}
+
+    if category not in valid_query_categories:
+        raise ValueError(
+            f"Invalid query category returned: {category}"
+        )
+
+    return category
+
+
 # -----------------------------
 # Initialize Mem0 + Ollama
 # -----------------------------
 
 memory = Memory.from_config(config)
 
-ollama = Client(host ="http://localhost:11434")
+ollama = Client(
+    host="http://localhost:11434"
+)
 
 print("Mem0 initialized")
 
@@ -53,62 +164,98 @@ print("Mem0 initialized")
 
 def chat(user_message):
 
-    #1 retrieve relevant memories
-    memories = memory.search(user_message,
-                             filters = {"user_id": USER_ID},
-                             limit = 5)
+    # 1. Classify the user's query
+    query_category = classify_query(user_message)
 
-    memory_text = "/n".join(f"{item['memory']}"
-                            for item in memories["results"])
+    print(f"Query category: {query_category}")
 
-    #2 Prompt
+    # 2. Retrieve relevant memories
+    if query_category == "all":
 
+        memories = memory.search(
+            user_message,
+            filters={"user_id": USER_ID},
+            limit=5
+        )
+
+    else:
+
+        memories = memory.search(
+            user_message,
+            filters={
+                "user_id": USER_ID,
+                "category": query_category
+            },
+            limit=5
+        )
+
+    retrieved_memories = memories["results"]
+
+    # 3. Convert memories into context
+    memory_text = "\n".join(
+        item["memory"]
+        for item in retrieved_memories
+    )
+
+    # 4. Build prompt
     system_prompt = f"""
-                        You are a helpful AI assistant.
-                        
-                        Use the following memories about the user when they are relevant:
-                        
-                        {memory_text}
-                        
-                        Do not mention the memory system unless explicitly asked.
-                        """
+You are a helpful AI assistant.
 
+Use the following memories about the user when they are relevant:
 
-    #3 generate a reponse
+{memory_text}
 
+Do not mention the memory system unless explicitly asked.
+"""
+
+    # 5. Generate response
     response = ollama.chat(
-        model = "llama3.1:latest",
-        messages = [
+        model="llama3.1:latest",
+        messages=[
             {
-                "role":"system",
-                "content":system_prompt
+                "role": "system",
+                "content": system_prompt
             },
             {
-                "role":"user",
-                "content":user_message
+                "role": "user",
+                "content": user_message
             },
         ],
     )
 
     assistant_message = response.message.content
 
-    #4 store convo in Mem0
-
-    memory.add(
+    # 6. Store user's conversation
+    result = memory.add(
         [
             {
-                "role":"user",
-                "content":user_message
-            },
-            {
-                "role":"assistant",
-                "content":assistant_message,
-            },
+                "role": "user",
+                "content": user_message
+            }
         ],
-        user_id = USER_ID
+        user_id=USER_ID,
     )
-    return assistant_message
 
+    # 7. Categorize newly extracted memories
+    for item in result.get("results", []):
+
+        memory_id = item["id"]
+        memory_text = item["memory"]
+
+        category = classify_memory(memory_text)
+
+        memory.update(
+            memory_id,
+            metadata={
+                "category": category
+            },
+        )
+
+        print(f"Memory: {memory_text}")
+        print(f"Category: {category}")
+
+    # 8. Return both response and retrieved memories
+    return assistant_message, retrieved_memories
 
 # -----------------------------
 # Interactive chat
@@ -117,6 +264,7 @@ def chat(user_message):
 print("AI Memory Assistant")
 print("Type 'exit' to quit.\n")
 
+
 while True:
 
     user_message = input("You: ")
@@ -124,100 +272,6 @@ while True:
     if user_message.lower() == "exit":
         break
 
-    answer = chat(user_message)
+    answer, retrieved_memories = chat(user_message)
 
     print(f"\nAssistant: {answer}\n")
-
-# # -----------------------------
-# # 1. Add a memory
-# # -----------------------------
-#
-# result = memory.add(
-#     "I am an AI and Machine Learning student.",
-#     user_id="atharva",
-# )
-#
-# print("\nMemory added:")
-# print(result)
-#
-#
-# memories_to_add = ["I am learning Python",
-#                    "I am currently building an AI Agent.",
-#                    "I am intrested in Machine Learning.,"
-#                    "I use Windows for development"]
-#
-# for text in memories_to_add:
-#     result = memory.add(text, user_id = "atharva")
-#
-# print(f"/n Added :{text}")
-# print(result)
-#
-#
-# # result = memory.add("I am no longer buidling an AI agent. i am now building a RAG application", user_id = "atharva")
-# # print("/n Update test:")
-# # print(result)
-#
-# result = memory.add(
-#     "I am building a RAG application instead of an AI Agent.",
-#     user_id="atharva",
-# )
-#
-# print(result)
-# # -----------------------------
-# # 2. Show all memories
-# # -----------------------------
-#
-# all_memories = memory.get_all(
-#     filters={"user_id": "atharva"}
-# )
-#
-# print("\nAll memories:")
-# print(all_memories)
-#
-#
-# # -----------------------------
-# # 3. Search memory
-# # -----------------------------
-#
-# results = memory.search(
-#     query="what am I studying?",
-#     filters={"user_id": "atharva"},
-#     top_k=5,
-#     threshold=0.1,
-# )
-#
-# print("\nRetrieved memories:")
-# print(results)
-#
-#
-# # -----------------------------
-# # Test semantic retrieval
-# # -----------------------------
-#
-# # queries = ["What is user currently building?",
-# #          "What is user intrested in ?"]
-# #
-# # for query in queries:
-# #     print("/n")
-# #     print(f"Query: {query}")
-# #
-# #     result = memory.search(
-# #         query = query,
-# #         filters= {"user_id":"atharva"},
-# #         top_k = 5,
-# #         threshold = 0.1
-# #     )
-# #     print(result)
-#
-# # results = memory.search(
-# #     query="What is user currently building?",
-# #     filters={"user_id": "atharva"},
-# #     top_k=5,
-# #     threshold=0.60,
-# # )
-# #
-# # print(results)
-# #
-#
-#
-#

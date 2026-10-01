@@ -1,0 +1,10 @@
+mem0ai==2.0.20
+ollama==0.6.2
+qdrant-client==1.19.0
+
+jupyterlab==4.6.3
+ipykernel==7.3.0
+requests==2.34.2
+
+mem0ai[nlp]==2.0.20
+mem0ai[extras]==2.0.20
