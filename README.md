@@ -1,25 +1,37 @@
 # Self-Learning Agent: Long-Term Memory AI Assistant
 
-A fully local AI assistant that **remembers you across sessions**. It combines **Mem0** (memory layer), **Qdrant** (vector database), **Ollama** (Llama 3.1 for chat) and **Nomic Embed Text** (embeddings), so your conversations and memories never leave your machine.
+A fully local AI assistant that **remembers you across sessions**. It combines **Mem0** (memory layer), **Qdrant** (vector database), **Ollama** (Llama 3.1 for chat) and **Nomic Embed Text** (embeddings), with a **Streamlit** interface — so your conversations and memories never leave your machine.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Mem0](https://img.shields.io/badge/Memory-Mem0-purple)
 ![Ollama](https://img.shields.io/badge/LLM-Ollama%20%7C%20Llama%203.1-black)
 ![Qdrant](https://img.shields.io/badge/Vector%20DB-Qdrant-red)
+![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B)
 
-> This project started as a reproduction of Dave Ebbelaar's Mem0 AI Cookbook example. The goal is to understand how long-term memory works in an AI assistant before extending it with custom memory management, conflict handling and retrieval evaluation (see the [Roadmap](#roadmap)).
+> This project started as a reproduction of Dave Ebbelaar's Mem0 AI Cookbook example (Phase 1), then extended with original work on memory categorization, retrieval, and a web UI (Phase 2). See [Future Scope](#future-scope) for the research directions this architecture is positioned to explore next.
 
 ---
 
 ## Features
 
-- **Persistent long-term memory:** facts from past conversations are stored and recalled in later sessions
-- **Automatic memory extraction:** Mem0 uses the LLM to pull discrete facts (e.g. "User is learning Python") out of each conversation turn
-- **Semantic retrieval:** the top-5 most relevant memories are found by embedding similarity, not keyword matching
-- **Per-user memory isolation:** every memory is scoped by `user_id`
-- **Metadata tagging:** memories can carry custom metadata such as a category
-- **100% local:** LLM inference, embeddings and storage all run on your machine
-- **Memory inspection:** view everything stored with `memory.get_all()`
+**Phase 1 — Reference implementation**
+- Persistent long-term memory across sessions
+- Automatic memory extraction from conversation turns
+- Semantic retrieval via embedding similarity (not keyword matching)
+- Per-user memory isolation
+- Metadata tagging
+- Memory inspection (`get_all()`)
+- 100% local — no external API calls
+
+**Phase 2 — Original extensions**
+- **Automatic memory categorization** into six types: Fact, Preference, Goal, Project, Skill, Temporary
+- **Category metadata** stored with every memory
+- **Query categorization** — incoming queries are classified the same way as stored memories
+- **Category-aware retrieval** — retrieval can filter/weight by category, not just vector similarity
+- **Batch memory classification** to reduce the number of LLM calls per turn
+- **Lightweight query routing** to cut latency on simple queries
+- **Grounded response prompting** — responses are explicitly conditioned on retrieved memories
+- **Streamlit web UI**, including a memory dashboard, retrieved-memory display, and similarity scores
 
 ---
 
@@ -27,24 +39,30 @@ A fully local AI assistant that **remembers you across sessions**. It combines *
 
 Every chat turn follows a four-step loop:
 
-1. **Retrieve:** search Qdrant for memories relevant to the user's message
-2. **Augment:** inject those memories into the system prompt
-3. **Generate:** Llama 3.1 (via Ollama) produces the reply
-4. **Store:** the user and assistant messages are passed to `memory.add()`, which extracts and saves new facts
+1. **Retrieve:** classify the query, then search Qdrant for memories relevant to it (semantic similarity, filterable by category)
+2. **Augment:** inject the retrieved memories into the system prompt
+3. **Generate:** Llama 3.1 (via Ollama) produces a response grounded in those memories
+4. **Store:** new facts are extracted from the exchange, classified into a category, and saved back to memory
 
 ```text
                          User
                            │
                            ▼
-                    ┌──────────────┐
-                    │   main.py    │
-                    └──────┬───────┘
+                 ┌───────────────────┐
+                 │   Streamlit UI    │
+                 └─────────┬─────────┘
                            │
                            ▼
-                    ┌──────────────┐
-                    │     Mem0     │
-                    │ Memory Layer │
-                    └──────┬───────┘
+                 ┌───────────────────┐
+                 │     main.py       │
+                 │  (routing logic)  │
+                 └─────────┬─────────┘
+                           │
+                           ▼
+                 ┌───────────────────┐
+                 │       Mem0        │
+                 │   Memory Layer    │
+                 └─────────┬─────────┘
                            │
                   ┌────────┴────────┐
                   │                 │
@@ -54,35 +72,43 @@ Every chat turn follows a four-step loop:
                   │                 │
                   └────────┬────────┘
                            │
-                    Relevant Memories
+                 Relevant, Category-Filtered
+                        Memories
                            │
                            ▼
-                    ┌──────────────┐
-                    │  Llama 3.1   │
-                    │    Ollama    │
-                    └──────┬───────┘
+                 ┌───────────────────┐
+                 │     Llama 3.1     │
+                 │      (Ollama)     │
+                 └─────────┬─────────┘
                            │
                            ▼
-                    Assistant Response
+                  Grounded Response
                            │
                            ▼
-                       Mem0.add()
-                           │
-                           ▼
-                    Store New Memories
+                Classify & Store New
+                      Memories
 ```
 
-### Example of extracted memories
+### Memory categories
 
-From the experiments in `mem0_experiments.ipynb`, plain conversation is distilled into atomic facts:
-
-| Input | Stored memory |
+| Category | Meaning |
 |---|---|
-| "I am building an AI Agent." | `User is currently building an AI Agent` |
-| "I prefer comedy movies over thriller ones." | `User prefers comedy movies over thriller ones` |
-| "I'm building a RAG project for college." | `User is building a RAG project for college` |
+| **Fact** | Stable information about the user |
+| **Preference** | Likes, dislikes, or preferences |
+| **Goal** | Something the user wants to achieve |
+| **Project** | Something the user is currently working on |
+| **Skill** | Something the user is learning or knows |
+| **Temporary** | Short-lived information that may soon be irrelevant |
 
-Searching "What am I using for my RAG project?" then returns the most relevant memories ranked by similarity score.
+### Example: conversation to structured memory
+
+| Input | Extracted memory | Category |
+|---|---|---|
+| "I am building an AI Agent." | User is currently building an AI Agent | Project |
+| "I prefer comedy movies over thriller ones." | User prefers comedy movies over thriller ones | Preference |
+| "I'm learning Python." | User is learning Python | Skill |
+
+A later query like *"What am I currently working on?"* is itself classified (→ `project`), which narrows retrieval to category-relevant memories before ranking by similarity.
 
 ---
 
@@ -95,6 +121,7 @@ Searching "What am I using for my RAG project?" then returns the most relevant m
 | Vector database | [Qdrant](https://qdrant.tech/) (768-dim vectors) |
 | LLM | Llama 3.1 via [Ollama](https://ollama.com/) |
 | Embeddings | `nomic-embed-text` via Ollama |
+| UI | [Streamlit](https://streamlit.io/) |
 
 ---
 
@@ -156,7 +183,19 @@ The Qdrant dashboard is available at <http://localhost:6333/dashboard>.
 
 ## Usage
 
-Run the interactive assistant:
+### Web UI (recommended)
+
+```bash
+streamlit run app.py
+```
+
+Opens a browser interface with:
+- A chat panel for conversing with the assistant
+- A memory dashboard showing all stored memories and their categories
+- Retrieved-memory display with similarity scores for the current query
+- A category filter
+
+### CLI
 
 ```bash
 python main.py
@@ -177,7 +216,7 @@ Start it again later and ask, *"What am I working on?"*. The assistant recalls i
 
 ### Changing the user
 
-Memories are scoped per user. Edit this line at the top of `main.py` to use a different identity:
+Memories are scoped per user. Edit this line at the top of `main.py` (or set it in the UI) to use a different identity:
 
 ```python
 USER_ID = "atharva"
@@ -203,7 +242,7 @@ All settings live in the `config` dictionary in `main.py`:
 | Vector store | Qdrant at `localhost:6333` | `embedding_model_dims` must be `768` for Nomic Embed |
 | LLM | `llama3.1:latest` | `temperature: 0`, `max_tokens: 2000` |
 | Embedder | `nomic-embed-text:latest` | Served by Ollama at `localhost:11434` |
-| Retrieval | `limit=5` | Number of memories injected per turn |
+| Retrieval | `limit=5` | Number of memories injected per turn, filterable by category |
 
 No API keys are required, since everything runs locally.
 
@@ -213,7 +252,8 @@ No API keys are required, since everything runs locally.
 
 ```text
 Self-Learning-Agent/
-├── main.py                    # Interactive chat loop with memory retrieval and storage
+├── main.py                    # CLI chat loop: retrieval, categorization, generation, storage
+├── app.py                     # Streamlit web UI: chat, memory dashboard, category filter
 ├── debug_search.py            # Inspects raw vector-store search results and scores
 ├── mem0_experiments.ipynb     # Experiments: add, search, get_all, LLM extraction debugging
 ├── mem0_experiments2.ipynb    # Experiments: metadata tagging and memory inspection
@@ -242,19 +282,37 @@ These are harmless. Install `mem0ai[nlp]` and `mem0ai[extras]` (see `requirement
 
 ---
 
-## Roadmap
+## Future Scope
 
-- [x] **Phase 1: Reference implementation.** Local memory store, semantic retrieval, per-user memories, metadata, memory inspection
-- [ ] **Phase 2: Memory quality and evaluation**
-  - [ ] Conflict handling (e.g. "I'm now building a RAG app instead of an agent" should update, not duplicate)
-  - [ ] Retrieval improvements (score thresholds, reranking, hybrid keyword + vector search)
-  - [ ] Evaluation set measuring retrieval accuracy on test queries
-  - [ ] Memory management commands (list, edit, delete from the chat)
-  - [ ] Unit tests
+Phase 1 and Phase 2 cover extraction, categorization, retrieval, and a usable UI — but they don't yet cover how the system behaves when memory *changes* over time, or how it should be *measured*. The gaps below come from current memory-agent research, and this architecture (local Mem0 + Qdrant + an LLM classification layer already in place) is well-positioned to explore them next.
+
+### 1. Conflict resolution
+
+Recent literature identifies conflict resolution as a critical, largely unsolved bottleneck in LLM agents: when new, potentially contradictory information arrives over a multi-turn conversation, agents struggle to detect and overwrite outdated facts so that later queries reflect only the newest valid state. Even advanced indexing and agentic loops fail to handle contradictory updates reliably — most practical memory layers, this project included today, default to simplistic overwrite rules that are difficult to inspect or correct.
+
+**Planned direction:** use the existing Llama 3.1 classification layer to detect when a new memory contradicts a stored one (e.g. a user's project focus changing from "building an agent" to "building a RAG app") and resolve it explicitly — updating the existing memory in place rather than creating a duplicate — with the decision logged and inspectable rather than silent.
+
+### 2. Evaluation beyond retrieval
+
+Existing memory benchmarks have historically evaluated reasoning, tool orchestration, or basic retrieval within static contexts. These conventional testbeds are insufficient for a *dynamic* memory agent, since they often lack systematic testing for abilities like handling contradictory updates or test-time learning.
+
+**Planned direction:** adopt a multi-dimensional benchmarking approach — in the spirit of frameworks like MemoryAgentBench — that scores the agent separately across four competencies: Accurate Retrieval, Test-Time Learning, Long-Range Understanding, and Conflict Resolution, instead of a single retrieval-accuracy number.
+
+### 3. Hybrid retrieval architecture
+
+The literature indicates that no single memory paradigm — pure long-context windows or plain RAG — is sufficient across all memory competencies. Pure in-context methods are limited by window size, while the effectiveness of RAG depends heavily on chunking and retriever granularity. Researchers are calling for hybrid architectures that integrate buffer, dense-retrieval, and structured (e.g. graph or temporal) memory to achieve better global-local trade-offs.
+
+**Planned direction:** this project's existing semantic (vector) search is a solid foundation for exactly this. The planned extension — hybrid search combining keyword matching with vector similarity, plus reranking — is a concrete step toward that hybrid trade-off.
+
+### Other planned items
+
+- In-chat memory management commands (list, edit, delete)
+- Unit test coverage for the retrieval and extraction pipeline
+- Dockerized deployment (app + Qdrant + Ollama) for one-command setup
 
 ---
 
 ## Acknowledgements
 
-- [Dave Ebbelaar's AI Cookbook](https://github.com/daveebbelaar/ai-cookbook) for the original Mem0 example this project builds on
-- [Mem0](https://github.com/mem0ai/mem0), [Qdrant](https://qdrant.tech/), [Ollama](https://ollama.com/) and [Nomic AI](https://www.nomic.ai/)
+- [Dave Ebbelaar's AI Cookbook](https://github.com/daveebbelaar/ai-cookbook) for the original Mem0 example this project's Phase 1 builds on
+- [Mem0](https://github.com/mem0ai/mem0), [Qdrant](https://qdrant.tech/), [Ollama](https://ollama.com/), [Nomic AI](https://www.nomic.ai/), and [Streamlit](https://streamlit.io/)
